@@ -1,0 +1,17 @@
+# Environments
+venv/
+env/
+.env
+
+# Data & Models
+data/raw/*
+data/processed/*
+data/datasets/*
+*.sqlite
+*.db
+*.pt
+*.joblib
+
+# Python
+__pycache__/
+*.pyc
