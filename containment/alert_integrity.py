@@ -2,6 +2,8 @@ import os
 import json
 import hmac
 import hashlib
+import secrets
+import time
 from pathlib import Path
 
 def _get_hmac_key() -> bytes:
@@ -85,26 +87,118 @@ def verify_and_load(alerts_path: Path | str, allow_unsigned_legacy: bool = False
         
     return alerts
 
-def create_arm_token() -> str:
-    """Generate cryptographically signed activation token string."""
-    payload = "BRDS_ACTIVE_ARMED_STATE_2026"
-    key = _get_hmac_key()
-    sig = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    return json.dumps({"payload": payload, "sig": sig}, indent=2)
+def create_arm_token(token_path: Path | str | None = None) -> str:
+    """Generate a time-limited, single-use, cryptographically signed arm token.
 
-def verify_arm_token(token_path: Path | str) -> bool:
-    """Verify presence and HMAC signature of signed activation token."""
+    Token format (JSON):
+        {
+            "payload":   "BRDS_ACTIVE_ARMED_STATE_2026",
+            "timestamp": "<ISO-8601 UTC>",
+            "nonce":     "<32 hex chars, cryptographically random>",
+            "sig":       "<HMAC-SHA256 over canonical JSON of payload+timestamp+nonce>"
+        }
+
+    If token_path is provided the token is written there.  Always returns the
+    JSON string so callers can inspect or pass it without re-reading the file.
+    """
+    payload = "BRDS_ACTIVE_ARMED_STATE_2026"
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    nonce = secrets.token_hex(16)  # 32 hex chars = 128 bits entropy
+    key = _get_hmac_key()
+    # Sign the canonical JSON of the three identity fields to prevent field-
+    # omission or field-reuse attacks.
+    signing_input = json.dumps(
+        {"nonce": nonce, "payload": payload, "timestamp": timestamp},
+        sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    sig = hmac.new(key, signing_input, hashlib.sha256).hexdigest()
+    token = json.dumps(
+        {"payload": payload, "timestamp": timestamp, "nonce": nonce, "sig": sig},
+        indent=2
+    )
+    if token_path is not None:
+        Path(token_path).write_text(token, encoding="utf-8")
+    return token
+
+
+def verify_arm_token(
+    token_path: Path | str,
+    *,
+    max_age_seconds: int = 300,
+    consume: bool = True,
+) -> bool:
+    """Verify and optionally consume a single-use arm token.
+
+    Checks performed (all must pass):
+      1. Token file exists and parses as valid JSON.
+      2. Required fields present: payload, timestamp, nonce, sig (all strings).
+      3. Payload string matches the expected constant.
+      4. HMAC-SHA256 signature is cryptographically valid.
+      5. Token has not expired (timestamp within max_age_seconds of UTC now).
+      6. Token has not already been consumed (no adjacent .consumed sidecar).
+
+    If consume=True (default), the token file is atomically renamed to
+    <token_path>.consumed on success, preventing replay even after process
+    restart.  Path.replace() is used for the rename, which is atomic on both
+    POSIX and Windows (within the same filesystem volume).
+
+    Returns:
+        True  -- token valid, unexpired, unconsumed (and consumed if consume=True).
+        False -- any check fails; never raises so callers get a simple bool gate.
+    """
     path = Path(token_path)
+    consumed_path = path.with_suffix(path.suffix + ".consumed")
+
+    # Replay check: a .consumed sidecar means the token was already used.
+    # Check this BEFORE checking whether the original file exists, so a
+    # restored or re-written token file cannot bypass the replay guard.
+    if consumed_path.exists():
+        return False
+
     if not path.exists():
         return False
+
     try:
         data = json.loads(path.read_text(encoding="utf-8").strip())
-        if not isinstance(data, dict) or "payload" not in data or "sig" not in data:
-            return False
-        payload = data["payload"]
-        provided_sig = data["sig"]
-        key = _get_hmac_key()
-        expected_sig = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(provided_sig, expected_sig) and payload == "BRDS_ACTIVE_ARMED_STATE_2026"
     except Exception:
         return False
+
+    # Field presence and type validation
+    for field in ("payload", "timestamp", "nonce", "sig"):
+        if field not in data or not isinstance(data[field], str) or not data[field]:
+            return False
+
+    if data["payload"] != "BRDS_ACTIVE_ARMED_STATE_2026":
+        return False
+
+    # Signature verification
+    key = _get_hmac_key()
+    signing_input = json.dumps(
+        {"nonce": data["nonce"], "payload": data["payload"], "timestamp": data["timestamp"]},
+        sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    expected_sig = hmac.new(key, signing_input, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(data["sig"], expected_sig):
+        return False
+
+    # Expiry check -- parse ISO-8601 UTC timestamp
+    try:
+        # time.strptime + calendar.timegm is the portable UTC-safe parser
+        import calendar
+        token_utc = calendar.timegm(time.strptime(data["timestamp"], "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, OverflowError):
+        return False
+
+    if time.time() - token_utc > max_age_seconds:
+        return False
+
+    # Atomic single-use consumption
+    if consume:
+        try:
+            path.replace(consumed_path)
+        except OSError:
+            # If rename fails (e.g., concurrent consumer already renamed it),
+            # treat as already consumed to prevent double-use.
+            return False
+
+    return True

@@ -393,3 +393,181 @@ def test_hmac_raw_unsigned_list_allowed_with_explicit_test_flag(tmp_path, monkey
     loaded2 = verify_and_load(raw_path)
     assert len(loaded2) == 1
 
+
+
+# ── Arm token security tests (Phase 3) ────────────────────────────────────────
+# These tests exercise the new time-limited, single-use, nonce-bearing token
+# introduced to replace the permanently reusable static HMAC token.
+
+import time as _time_module
+
+
+def test_arm_token_valid_token_accepted(tmp_path, monkeypatch):
+    """A freshly created token with correct HMAC must be accepted."""
+    monkeypatch.setenv("BRDS_ALLOW_INSECURE_DEV_HMAC", "1")
+    from containment.alert_integrity import create_arm_token, verify_arm_token
+
+    token_path = tmp_path / ".arm_token_valid"
+    create_arm_token(token_path)
+    assert verify_arm_token(token_path, consume=False) is True
+
+
+def test_arm_token_replay_rejected(tmp_path, monkeypatch):
+    """A consumed token (renamed to .consumed) must be rejected on second use."""
+    monkeypatch.setenv("BRDS_ALLOW_INSECURE_DEV_HMAC", "1")
+    from containment.alert_integrity import create_arm_token, verify_arm_token
+
+    token_path = tmp_path / ".arm_token_replay"
+    create_arm_token(token_path)
+
+    # First verification consumes the token (default consume=True)
+    result1 = verify_arm_token(token_path, consume=True)
+    assert result1 is True, "First verification should succeed"
+
+    # Token file is now renamed to .arm_token_replay.consumed; re-verification must fail
+    result2 = verify_arm_token(token_path, consume=True)
+    assert result2 is False, "Second verification (replay) must be rejected"
+
+
+def test_arm_token_replay_rejected_even_if_token_file_restored(tmp_path, monkeypatch):
+    """Replay guard must hold even if the original token file is recreated with identical content."""
+    monkeypatch.setenv("BRDS_ALLOW_INSECURE_DEV_HMAC", "1")
+    from containment.alert_integrity import create_arm_token, verify_arm_token
+
+    token_path = tmp_path / ".arm_token_restore"
+    token_text = create_arm_token(token_path)
+
+    # Consume the token
+    verify_arm_token(token_path, consume=True)
+
+    # Attacker restores the original token file
+    token_path.write_text(token_text, encoding="utf-8")
+
+    # Must still be rejected because .consumed sidecar exists
+    result = verify_arm_token(token_path, consume=False)
+    assert result is False, "Restored token file must be rejected due to .consumed sidecar"
+
+
+def test_arm_token_expired_token_rejected(tmp_path, monkeypatch):
+    """A token with a timestamp older than max_age_seconds must be rejected."""
+    monkeypatch.setenv("BRDS_ALLOW_INSECURE_DEV_HMAC", "1")
+    from containment.alert_integrity import create_arm_token, verify_arm_token
+    import json
+    import hmac as _hmac
+    import hashlib as _hl
+
+    token_text = create_arm_token()  # get fresh token string
+    data = json.loads(token_text)
+
+    # Backdate the timestamp by 10 minutes
+    past_time = _time_module.gmtime(_time_module.time() - 600)
+    data["timestamp"] = _time_module.strftime("%Y-%m-%dT%H:%M:%SZ", past_time)
+
+    # Re-sign with the test key so HMAC is valid for the backdated timestamp
+    key = b"BRDS_TEST_ONLY_HMAC_KEY"
+    signing_input = json.dumps(
+        {"nonce": data["nonce"], "payload": data["payload"], "timestamp": data["timestamp"]},
+        sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    data["sig"] = _hmac.new(key, signing_input, _hl.sha256).hexdigest()
+
+    token_path = tmp_path / ".arm_token_expired"
+    token_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    result = verify_arm_token(token_path, max_age_seconds=300, consume=False)
+    assert result is False, "Expired token (10 min old, TTL=5 min) must be rejected"
+
+
+def test_arm_token_tampered_hmac_rejected(tmp_path, monkeypatch):
+    """A token with a forged/corrupted HMAC signature must be rejected."""
+    monkeypatch.setenv("BRDS_ALLOW_INSECURE_DEV_HMAC", "1")
+    from containment.alert_integrity import create_arm_token, verify_arm_token
+    import json
+
+    token_text = create_arm_token()
+    data = json.loads(token_text)
+    data["sig"] = "0" * 64  # zeroed-out signature
+
+    token_path = tmp_path / ".arm_token_tampered"
+    token_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    result = verify_arm_token(token_path, consume=False)
+    assert result is False, "Token with forged HMAC must be rejected"
+
+
+def test_arm_token_missing_nonce_rejected(tmp_path, monkeypatch):
+    """Old-format token without nonce field must be rejected."""
+    monkeypatch.setenv("BRDS_ALLOW_INSECURE_DEV_HMAC", "1")
+    from containment.alert_integrity import verify_arm_token
+    import json
+    import hmac as _hmac
+    import hashlib as _hl
+
+    # Simulate a legacy token: payload + sig only (no nonce, no timestamp)
+    key = b"BRDS_TEST_ONLY_HMAC_KEY"
+    payload = "BRDS_ACTIVE_ARMED_STATE_2026"
+    sig = _hmac.new(key, payload.encode("utf-8"), _hl.sha256).hexdigest()
+
+    token_path = tmp_path / ".arm_token_no_nonce"
+    token_path.write_text(
+        json.dumps({"payload": payload, "sig": sig}, indent=2),
+        encoding="utf-8"
+    )
+
+    result = verify_arm_token(token_path, consume=False)
+    assert result is False, "Legacy token without nonce/timestamp must be rejected"
+
+
+def test_arm_token_wrong_payload_rejected(tmp_path, monkeypatch):
+    """Token with wrong payload string must be rejected even with valid HMAC."""
+    monkeypatch.setenv("BRDS_ALLOW_INSECURE_DEV_HMAC", "1")
+    from containment.alert_integrity import verify_arm_token
+    import json
+    import hmac as _hmac
+    import hashlib as _hl
+
+    key = b"BRDS_TEST_ONLY_HMAC_KEY"
+    payload = "ATTACKER_CONTROLLED_PAYLOAD"
+    timestamp = _time_module.strftime("%Y-%m-%dT%H:%M:%SZ", _time_module.gmtime())
+    nonce = "aaaa" * 8
+
+    signing_input = json.dumps(
+        {"nonce": nonce, "payload": payload, "timestamp": timestamp},
+        sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    sig = _hmac.new(key, signing_input, _hl.sha256).hexdigest()
+
+    token_path = tmp_path / ".arm_token_wrong_payload"
+    token_path.write_text(
+        json.dumps({"payload": payload, "timestamp": timestamp, "nonce": nonce, "sig": sig}, indent=2),
+        encoding="utf-8"
+    )
+
+    result = verify_arm_token(token_path, consume=False)
+    assert result is False, "Token with wrong payload must be rejected"
+
+
+def test_arm_token_nonexistent_file_returns_false(tmp_path, monkeypatch):
+    """Missing token file must return False, not raise an exception."""
+    monkeypatch.setenv("BRDS_ALLOW_INSECURE_DEV_HMAC", "1")
+    from containment.alert_integrity import verify_arm_token
+
+    missing = tmp_path / ".arm_token_does_not_exist"
+    result = verify_arm_token(missing, consume=False)
+    assert result is False
+
+
+def test_arm_token_trigger_daemon_gate_accepts_new_format(tmp_path, monkeypatch):
+    """The trigger_daemon dual gate must accept the new time-limited token format."""
+    monkeypatch.setenv("BRDS_ALLOW_INSECURE_DEV_HMAC", "1")
+    monkeypatch.setenv("BRDS_LAB_ENVIRONMENT_APPROVED", "1")
+    monkeypatch.setenv("BRDS_LIVE_CONTAINMENT", "1")
+
+    from containment.alert_integrity import create_arm_token
+    from containment import trigger_daemon
+
+    arm = tmp_path / ".arm_token_gate"
+    create_arm_token(arm)
+
+    result = trigger_daemon._is_live_containment_allowed(arm)
+    assert result is True, "Dual gate must accept a freshly created new-format token"

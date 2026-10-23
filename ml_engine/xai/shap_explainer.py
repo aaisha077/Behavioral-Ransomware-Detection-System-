@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 from pathlib import Path
 import joblib
 import numpy as np
@@ -117,7 +117,11 @@ class LSTMSHAPExplainer:
                 features_scaled = self.lstm_infer.scaler.transform(features_raw)
             else:
                 features_scaled = features_raw
-                
+
+            # Clip to [-5.0, 30.0] to match inference-path OOD guard (see infer.py):
+            # prevents burst events from zeroing gradient signal in explanations.
+            features_scaled = np.clip(features_scaled, -5.0, 30.0)
+
             # Target 30 steps sequence
             seq_len = 30
             if len(features_scaled) > seq_len:
@@ -152,7 +156,11 @@ class LSTMSHAPExplainer:
                 features_scaled = self.lstm_infer.scaler.transform(features_raw)
             else:
                 features_scaled = features_raw
-                
+
+            # Clip to [-5.0, 30.0] to match inference-path OOD guard (see infer.py):
+            # prevents burst events from zeroing gradient signal in explanations.
+            features_scaled = np.clip(features_scaled, -5.0, 30.0)
+
             seq_len = 30
             if len(features_scaled) > seq_len:
                 features_scaled = features_scaled[-seq_len:]
