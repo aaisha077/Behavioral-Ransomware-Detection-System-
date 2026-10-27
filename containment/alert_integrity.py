@@ -192,13 +192,19 @@ def verify_arm_token(
     if time.time() - token_utc > max_age_seconds:
         return False
 
-    # Atomic single-use consumption
+    # Atomic single-use consumption:
+    # Use os.open with O_CREAT | O_EXCL to ensure strictly ONE process/thread succeeds,
+    # preventing TOCTOU races under simultaneous verification attempts.
     if consume:
         try:
-            path.replace(consumed_path)
-        except OSError:
-            # If rename fails (e.g., concurrent consumer already renamed it),
-            # treat as already consumed to prevent double-use.
+            fd = os.open(str(consumed_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+        except (FileExistsError, OSError):
             return False
+
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     return True

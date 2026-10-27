@@ -11,8 +11,9 @@
     re-enabled.  This prevents restoring adapters that were already disabled
     before containment ran.
 
-    If no state file is found, the script falls back to re-enabling all
-    currently Disabled adapters and emits a warning.
+    Security fail-safe: if the containment state file is missing, corrupt,
+    or empty, rollback aborts with an error rather than indiscriminately
+    enabling all disabled adapters on the system.
 
     Mode guard: requires BRDS_LIVE_CONTAINMENT=1 AND -Armed, identical to
     ContainHost.ps1, so a misconfigured environment cannot accidentally
@@ -72,72 +73,92 @@ if ($DryRunOverride.IsPresent) {
 # Determine which adapters to restore
 Write-Host "[BRDS-PEC] Starting network rollback..."
 
-$adapterNamesToRestore = $null
-
-if (Test-Path $StateFilePath) {
-    try {
-        $state = Get-Content -Path $StateFilePath -Raw | ConvertFrom-Json
-        $adapterNamesToRestore = $state.disabled_by_containment
-        Write-Host "[BRDS-PEC] State file found: $StateFilePath"
-        Write-Host "[BRDS-PEC] Adapters recorded for rollback: $($adapterNamesToRestore -join ', ')"
-    } catch {
-        Write-Warning "[BRDS-PEC] Could not parse state file. Falling back to all disabled adapters."
-        $adapterNamesToRestore = $null
-    }
-} else {
-    Write-Warning "[BRDS-PEC] No state file found at: $StateFilePath"
-    Write-Warning "[BRDS-PEC] Falling back to re-enabling ALL currently Disabled adapters (imprecise)."
+if (-not (Test-Path $StateFilePath)) {
+    Write-Warning "[SECURITY FAIL-SAFE] No containment state file found at: $StateFilePath"
+    Write-Warning "[SECURITY FAIL-SAFE] Aborting rollback to prevent unintended adapter re-enablement."
+    exit 1
 }
 
-# Re-enable adapters
-if ($null -ne $adapterNamesToRestore -and $adapterNamesToRestore.Count -gt 0) {
-    # State-aware path: only restore recorded adapters
-    $restored = @()
-    foreach ($adapterName in $adapterNamesToRestore) {
-        $adapter = Get-NetAdapter -Name $adapterName -ErrorAction SilentlyContinue
-        if ($null -eq $adapter) {
-            Write-Warning "[BRDS-PEC] Adapter '$adapterName' from state file not found on system, skipping."
-            continue
-        }
-        Write-Host "[BRDS-PEC] Adapter to restore: $adapterName (status: $($adapter.Status))"
-        if ($DryRun) {
-            Write-Host "[DRY-RUN] Would re-enable adapter: $adapterName"
-        } else {
-            Write-Host "[ROLLBACK] Re-enabling network adapter: $adapterName..."
-            try {
-                Enable-NetAdapter -Name $adapterName -Confirm:$false -ErrorAction Stop
-                Write-Host "[ROLLBACK] Adapter $adapterName re-enabled."
-                $restored += $adapterName
-            } catch {
-                Write-Warning "Could not re-enable adapter $adapterName"
-            }
-        }
-    }
-    Write-Host "[BRDS-PEC] Network rollback completed. DryRun=$DryRun RestoredAdapters=$($restored.Count)"
-} else {
-    # Fallback: re-enable all currently Disabled adapters
-    $adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Disabled" }
-
-    if ($adapters.Count -eq 0) {
-        Write-Host "[BRDS-PEC] No disabled network adapters found. Nothing to restore."
-        exit 0
-    }
-
-    $restored = @()
-    foreach ($adapter in $adapters) {
-        Write-Host "[BRDS-PEC] Disabled adapter found: $($adapter.Name)"
-        if ($DryRun) {
-            Write-Host "[DRY-RUN] Would re-enable adapter: $($adapter.Name)"
-        } else {
-            Write-Host "[ROLLBACK] Re-enabling network adapter: $($adapter.Name)..."
-            try {
-                Enable-NetAdapter -Name $adapter.Name -Confirm:$false -ErrorAction Stop
-                Write-Host "[ROLLBACK] Adapter $($adapter.Name) re-enabled."
-                $restored += $adapter.Name
-            } catch {
-                Write-Warning "Could not re-enable adapter $($adapter.Name)"
-            }
-        }
-    }
-    Write-Host "[BRDS-PEC] Network rollback completed (fallback). DryRun=$DryRun RestoredAdapters=$($restored.Count)"
+try {
+    $rawContent = Get-Content -Path $StateFilePath -Raw -ErrorAction Stop
+    $state = $rawContent | ConvertFrom-Json -ErrorAction Stop
+} catch {
+    Write-Warning "[SECURITY FAIL-SAFE] Could not parse containment state file: $StateFilePath"
+    Write-Warning "[SECURITY FAIL-SAFE] Aborting rollback to prevent unintended adapter re-enablement."
+    exit 1
 }
+
+if ($null -eq $state -or -not ($state -is [System.Management.Automation.PSCustomObject])) {
+    Write-Warning "[SECURITY FAIL-SAFE] Containment state file is not a valid JSON object: $StateFilePath"
+    Write-Warning "[SECURITY FAIL-SAFE] Aborting rollback to prevent unintended adapter re-enablement."
+    exit 1
+}
+
+$prop = $state.PSObject.Properties['disabled_by_containment']
+if ($null -eq $prop) {
+    Write-Warning "[SECURITY FAIL-SAFE] Containment state file missing required property 'disabled_by_containment': $StateFilePath"
+    Write-Warning "[SECURITY FAIL-SAFE] Aborting rollback to prevent unintended adapter re-enablement."
+    exit 1
+}
+
+$val = $prop.Value
+if ($null -eq $val) {
+    Write-Warning "[SECURITY FAIL-SAFE] Property 'disabled_by_containment' in state file cannot be null: $StateFilePath"
+    Write-Warning "[SECURITY FAIL-SAFE] Aborting rollback to prevent unintended adapter re-enablement."
+    exit 1
+}
+
+$adapterNamesToRestore = @()
+if ($val -is [System.Array] -or $val -is [System.Collections.IList]) {
+    foreach ($item in $val) {
+        if (-not ($item -is [string]) -or [string]::IsNullOrWhiteSpace($item)) {
+            Write-Warning "[SECURITY FAIL-SAFE] Property 'disabled_by_containment' contains invalid non-string adapter entry: $StateFilePath"
+            Write-Warning "[SECURITY FAIL-SAFE] Aborting rollback to prevent unintended adapter re-enablement."
+            exit 1
+        }
+        $adapterNamesToRestore += [string]$item
+    }
+} elseif ($val -is [string]) {
+    if ([string]::IsNullOrWhiteSpace($val)) {
+        Write-Warning "[SECURITY FAIL-SAFE] Property 'disabled_by_containment' string is empty: $StateFilePath"
+        Write-Warning "[SECURITY FAIL-SAFE] Aborting rollback to prevent unintended adapter re-enablement."
+        exit 1
+    }
+    $adapterNamesToRestore += [string]$val
+} else {
+    Write-Warning "[SECURITY FAIL-SAFE] Property 'disabled_by_containment' has invalid type: $StateFilePath"
+    Write-Warning "[SECURITY FAIL-SAFE] Aborting rollback to prevent unintended adapter re-enablement."
+    exit 1
+}
+
+Write-Host "[BRDS-PEC] State file found: $StateFilePath"
+Write-Host "[BRDS-PEC] Adapters recorded for rollback: $($adapterNamesToRestore -join ', ')"
+
+if ($adapterNamesToRestore.Count -eq 0) {
+    Write-Host "[BRDS-PEC] State file records 0 adapters disabled by containment. Nothing to restore."
+    exit 0
+}
+
+# State-aware path: ONLY restore recorded adapters
+$restored = @()
+foreach ($adapterName in $adapterNamesToRestore) {
+    $adapter = Get-NetAdapter -Name $adapterName -ErrorAction SilentlyContinue
+    if ($null -eq $adapter) {
+        Write-Warning "[BRDS-PEC] Adapter '$adapterName' from state file not found on system, skipping."
+        continue
+    }
+    Write-Host "[BRDS-PEC] Adapter to restore: $adapterName (status: $($adapter.Status))"
+    if ($DryRun) {
+        Write-Host "[DRY-RUN] Would re-enable adapter: $adapterName"
+    } else {
+        Write-Host "[ROLLBACK] Re-enabling network adapter: $adapterName..."
+        try {
+            Enable-NetAdapter -Name $adapterName -Confirm:$false -ErrorAction Stop
+            Write-Host "[ROLLBACK] Adapter $adapterName re-enabled."
+            $restored += $adapterName
+        } catch {
+            Write-Warning "Could not re-enable adapter $adapterName"
+        }
+    }
+}
+Write-Host "[BRDS-PEC] Network rollback completed. DryRun=$DryRun RestoredAdapters=$($restored.Count)"

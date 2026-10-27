@@ -571,3 +571,115 @@ def test_arm_token_trigger_daemon_gate_accepts_new_format(tmp_path, monkeypatch)
 
     result = trigger_daemon._is_live_containment_allowed(arm)
     assert result is True, "Dual gate must accept a freshly created new-format token"
+
+def test_arm_token_simultaneous_verification_permits_exactly_one_consumer(tmp_path, monkeypatch):
+    """8 simultaneous workers synchronized via a barrier across 10 rounds must allow exactly 1 consumer per round."""
+    import concurrent.futures
+    import threading
+    monkeypatch.setenv("BRDS_ALLOW_INSECURE_DEV_HMAC", "1")
+    from containment.alert_integrity import create_arm_token, verify_arm_token
+
+    num_workers = 8
+    num_rounds = 10
+
+    for round_idx in range(num_rounds):
+        round_dir = tmp_path / f"round_{round_idx}"
+        round_dir.mkdir()
+        token_path = round_dir / ".arm_token_concurrent"
+        create_arm_token(token_path)
+
+        barrier = threading.Barrier(num_workers)
+
+        def _worker():
+            barrier.wait()  # synchronize all 8 workers to attempt consumption simultaneously
+            return verify_arm_token(token_path, consume=True)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [executor.submit(_worker) for _ in range(num_workers)]
+            results = [f.result() for f in futures]
+
+        assert results.count(True) == 1, (
+            f"Round {round_idx}: expected exactly 1 successful consumer, got {results.count(True)}"
+        )
+        assert results.count(False) == num_workers - 1, (
+            f"Round {round_idx}: expected {num_workers - 1} rejected consumers, got {results.count(False)}"
+        )
+
+
+def test_rollback_host_state_validation_fail_closed(tmp_path):
+    """RollbackHost.ps1 must fail closed (exit 1) on missing, malformed, missing-property, or wrong-type state."""
+    import shutil
+    import subprocess
+
+    if shutil.which("powershell") is None:
+        pytest.skip("powershell not available")
+
+    script = Path(__file__).resolve().parent.parent / "containment" / "RollbackHost.ps1"
+    assert script.exists(), "RollbackHost.ps1 script must exist"
+
+    # Case 1: Missing state file -> exit 1
+    missing = tmp_path / "missing_state.json"
+    res1 = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-StateFilePath", str(missing)],
+        capture_output=True, text=True
+    )
+    assert res1.returncode == 1, f"Missing state file must exit 1, got {res1.returncode}"
+
+    # Case 2: Malformed JSON -> exit 1
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{not valid json", encoding="utf-8")
+    res2 = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-StateFilePath", str(malformed)],
+        capture_output=True, text=True
+    )
+    assert res2.returncode == 1, f"Malformed state file must exit 1, got {res2.returncode}"
+
+    # Case 3: Incomplete state (missing disabled_by_containment property) -> exit 1
+    missing_prop = tmp_path / "missing_prop.json"
+    missing_prop.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "dry_run": False}), encoding="utf-8")
+    res3 = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-StateFilePath", str(missing_prop)],
+        capture_output=True, text=True
+    )
+    assert res3.returncode == 1, f"State missing disabled_by_containment must exit 1, got {res3.returncode}"
+
+    # Case 4: Wrong type (e.g. integer instead of array) -> exit 1
+    wrong_type = tmp_path / "wrong_type.json"
+    wrong_type.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "disabled_by_containment": 123}), encoding="utf-8")
+    res4 = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-StateFilePath", str(wrong_type)],
+        capture_output=True, text=True
+    )
+    assert res4.returncode == 1, f"Wrong-type disabled_by_containment must exit 1, got {res4.returncode}"
+
+
+def test_rollback_host_state_zero_adapters_and_dryrun_success(tmp_path):
+    """RollbackHost.ps1 must distinguish valid zero adapters (exit 0) and dryrun restore (exit 0)."""
+    import shutil
+    import subprocess
+
+    if shutil.which("powershell") is None:
+        pytest.skip("powershell not available")
+
+    script = Path(__file__).resolve().parent.parent / "containment" / "RollbackHost.ps1"
+
+    # Case 1: Valid state recording 0 adapters -> exit 0
+    zero_state = tmp_path / "zero_state.json"
+    zero_state.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "disabled_by_containment": []}), encoding="utf-8")
+    res1 = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-StateFilePath", str(zero_state)],
+        capture_output=True, text=True
+    )
+    assert res1.returncode == 0, f"Valid zero adapters state must exit 0, got {res1.returncode}"
+    assert "0 adapters disabled by containment" in res1.stdout or "Nothing to restore" in res1.stdout
+
+    # Case 2: Valid state with adapter in dry-run mode -> exit 0 without modifying adapters
+    valid_state = tmp_path / "valid_state.json"
+    valid_state.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "disabled_by_containment": ["MockAdapterNonExistent"]}), encoding="utf-8")
+    res2 = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-StateFilePath", str(valid_state), "-DryRunOverride"],
+        capture_output=True, text=True
+    )
+    assert res2.returncode == 0, f"Valid dry-run state must exit 0, got {res2.returncode}"
+    assert "DRY-RUN" in res2.stdout
+
