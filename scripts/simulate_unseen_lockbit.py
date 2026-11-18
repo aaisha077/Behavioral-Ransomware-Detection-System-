@@ -6,12 +6,13 @@ and streams it live to the dashboard API.
 This family was NOT in the training dataset.
 """
 
+import os
+import sys
 import time
-import requests
 from datetime import datetime, timezone
+import requests
 
 API_URL = "http://127.0.0.1:5000/api/score/live"
-API_KEY = "dev-hmac-key"
 
 def generate_lockbit_trace():
     """Generates 30 synthetic windows (2.5 minutes of telemetry) mimicking LockBit."""
@@ -68,9 +69,15 @@ def main():
     print("[*] Generating synthetic zero-day trace for unseen family: LockBit")
     trace = generate_lockbit_trace()
     
+    api_key = os.environ.get("BRDS_API_KEY")
+    if not api_key:
+        print("[!] ERROR: BRDS_API_KEY environment variable is missing.")
+        print("    Authentication is required. Run:")
+        print("    $env:BRDS_API_KEY=\"<your-key>\"; python scripts/simulate_unseen_lockbit.py")
+        sys.exit(1)
     headers = {
         "Content-Type": "application/json",
-        "X-API-Key": API_KEY
+        "X-BRDS-API-Key": api_key,
     }
 
     print(f"[*] Beginning live simulation. Sending to {API_URL} every 1 second...")

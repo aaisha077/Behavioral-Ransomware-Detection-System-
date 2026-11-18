@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 from pathlib import Path
 import joblib
 import numpy as np
@@ -75,7 +75,14 @@ class SHAPExplainer:
                     "importance_value": val
                 })
 
-        # Sort by absolute importance value descending
+        # Normalize importance values so sum of absolute values is 1.0 (relative proportion)
+        # Preserves both positive (risk-increasing) and negative (risk-reducing) attribution signs
+        total_importance = sum(abs(x["importance_value"]) for x in attributions)
+        if total_importance > 0:
+            for attr in attributions:
+                attr["importance_value"] = attr["importance_value"] / total_importance
+
+        # Sort by absolute importance value descending while preserving sign
         attributions.sort(key=lambda x: abs(x["importance_value"]), reverse=True)
         return attributions
 
@@ -110,7 +117,11 @@ class LSTMSHAPExplainer:
                 features_scaled = self.lstm_infer.scaler.transform(features_raw)
             else:
                 features_scaled = features_raw
-                
+
+            # Clip to [-5.0, 30.0] to match inference-path OOD guard (see infer.py):
+            # prevents burst events from zeroing gradient signal in explanations.
+            features_scaled = np.clip(features_scaled, -5.0, 30.0)
+
             # Target 30 steps sequence
             seq_len = 30
             if len(features_scaled) > seq_len:
@@ -131,8 +142,8 @@ class LSTMSHAPExplainer:
             if len(shap_values.shape) == 3:
                 shap_values = shap_values[0]
                 
-            # Average absolute feature importance across all sequence timesteps
-            mean_importance = np.abs(shap_values).mean(axis=0)
+            # Average signed feature importance across all sequence timesteps
+            mean_importance = shap_values.mean(axis=0)
             attributions = [
                 {"feature_name": name, "importance_value": float(np.asarray(val).flatten()[0])}
                 for name, val in zip(self.lstm_infer.feature_names, mean_importance)
@@ -145,7 +156,11 @@ class LSTMSHAPExplainer:
                 features_scaled = self.lstm_infer.scaler.transform(features_raw)
             else:
                 features_scaled = features_raw
-                
+
+            # Clip to [-5.0, 30.0] to match inference-path OOD guard (see infer.py):
+            # prevents burst events from zeroing gradient signal in explanations.
+            features_scaled = np.clip(features_scaled, -5.0, 30.0)
+
             seq_len = 30
             if len(features_scaled) > seq_len:
                 features_scaled = features_scaled[-seq_len:]
@@ -161,21 +176,19 @@ class LSTMSHAPExplainer:
             output.backward()
             
             grads = input_tensor.grad.detach().numpy()[0] # (seq_len, input_dim)
-            grad_x_input = np.abs(grads * features_scaled).mean(axis=0)
+            grad_x_input = (grads * features_scaled).mean(axis=0)
             
             attributions = [
                 {"feature_name": name, "importance_value": float(np.asarray(val).flatten()[0])}
                 for name, val in zip(self.lstm_infer.feature_names, grad_x_input)
             ]
             
-        # Normalize importance values so they sum to 1.0 (relative percentage importance)
-        # This prevents "all zeros" in the UI when the sigmoid gradient vanishes due to high confidence (0.999+ scores)
+        # Normalize importance values so sum of absolute values is 1.0 (relative proportion)
+        # Preserves both positive and negative attribution signs
         total_importance = sum(abs(x["importance_value"]) for x in attributions)
         if total_importance > 0:
             for attr in attributions:
-                # Scale up to a readable range, e.g. relative percentage (0.0 to 1.0)
-                # We multiply by 10 so the raw values look like solid integers/decimals in the UI
-                attr["importance_value"] = (abs(attr["importance_value"]) / total_importance) * 10.0
+                attr["importance_value"] = attr["importance_value"] / total_importance
 
         attributions.sort(key=lambda x: abs(x["importance_value"]), reverse=True)
         return attributions

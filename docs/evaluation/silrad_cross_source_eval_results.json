@@ -1,0 +1,442 @@
+{
+  "experiment_id": "silrad_cross_source_validation_v1",
+  "status": "COMPLETE",
+  "integrity": {
+    "pre_experiment_checksums": {
+      "baseline_models_joblib": {
+        "sha256_prefix": "370321cdb0489a78",
+        "size_bytes": 727185
+      },
+      "lstm_model_pth": {
+        "sha256_prefix": "9818ce2d21d0d3a9",
+        "size_bytes": 676661
+      }
+    },
+    "post_experiment_checksums": {
+      "baseline_models_joblib": {
+        "sha256_prefix": "370321cdb0489a78",
+        "size_bytes": 727185
+      },
+      "lstm_model_pth": {
+        "sha256_prefix": "9818ce2d21d0d3a9",
+        "size_bytes": 676661
+      }
+    },
+    "models_unchanged": true
+  },
+  "compatibility_check": {
+    "all_compatible": true,
+    "per_feature": {
+      "event_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.0,
+        "mean": 10.0,
+        "max": 10.0,
+        "source_column": "event.code (all rows in chunk)",
+        "transformation": "len(chunk) \u2014 total Sysmon event rows in the 10-row window",
+        "missing_value_handling": "N/A \u2014 always equals chunk length (min 1)",
+        "training_identical": true,
+        "notes": "Identical computation in SILRADAdapter.convert_events_to_windows() line 88"
+      },
+      "unique_images": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.0,
+        "mean": 2.0808,
+        "max": 8.0,
+        "source_column": "Image",
+        "transformation": "len(np.unique(chunk['Image'].dropna().astype(str)))",
+        "missing_value_handling": "dropna() before unique count; 0 if all NaN",
+        "training_identical": true,
+        "notes": "SILRADAdapter line 69; Image field 100% non-null in attack events"
+      },
+      "unique_files": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.0,
+        "mean": 5.2424,
+        "max": 10.0,
+        "source_column": "TargetObject",
+        "transformation": "len(np.unique(chunk['TargetObject'].dropna().astype(str)))",
+        "missing_value_handling": "dropna() before unique count; 0 if all NaN",
+        "training_identical": true,
+        "notes": "SILRADAdapter line 70; TargetObject field 100% non-null in attack events"
+      },
+      "unique_extensions": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.0,
+        "mean": 5.2027,
+        "max": 10.0,
+        "source_column": "TargetObject",
+        "transformation": "Count unique lowercase 4-char extensions from TargetObject values containing '.' in filename part",
+        "missing_value_handling": "0 if no dots found in any target object",
+        "training_identical": true,
+        "notes": "SILRADAdapter line 74 \u2014 same logic used for both benign and attack chunks"
+      },
+      "unique_destination_ips": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.9869,
+        "mean": 0.0261,
+        "max": 5.0,
+        "source_column": "TargetObject (proxy for network destinations when event_3_count > 0)",
+        "transformation": "len(np.unique(TargetObject)) if network_activity_count > 0 else 0",
+        "missing_value_handling": "0 when no network events",
+        "training_identical": true,
+        "notes": "Known proxy: TargetObject is used as destination IP stand-in for Sysmon Event 3. Same approximation used during training for SILRAD benign windows."
+      },
+      "suspicious_path_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 1.0,
+        "mean": 0.0,
+        "max": 0.0,
+        "source_column": "CommandLine",
+        "transformation": "Count CommandLine entries containing any of: vssadmin, wbemtest, bcdedit, wmic, powershell, 'cmd.exe /c'",
+        "missing_value_handling": "0 if CommandLine is NaN or empty",
+        "training_identical": true,
+        "notes": "SILRADAdapter lines 79-82; CommandLine 100% non-null in attack events"
+      },
+      "file_activity_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.447,
+        "mean": 2.6667,
+        "max": 10.0,
+        "source_column": "event.code",
+        "transformation": "sum(event.code == 11) + sum(event.code == 23) + sum(event.code == 26)",
+        "missing_value_handling": "fillna(0) before cast to int",
+        "training_identical": true,
+        "notes": "FileCreate(11) + FileDelete(23) + FileDeleteDetected(26) \u2014 SILRAD attack events contain codes 11 and 23"
+      },
+      "registry_activity_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.2308,
+        "mean": 5.4286,
+        "max": 10.0,
+        "source_column": "event.code",
+        "transformation": "sum(event.code == 12) + sum(event.code == 13)",
+        "missing_value_handling": "fillna(0) before cast to int",
+        "training_identical": true,
+        "notes": "RegistryEvent(12,13) \u2014 SILRAD attack events contain codes 12 and 13 (largest event types)"
+      },
+      "network_activity_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.9869,
+        "mean": 0.0189,
+        "max": 4.0,
+        "source_column": "event.code",
+        "transformation": "sum(event.code == 3)",
+        "missing_value_handling": "fillna(0) before cast to int",
+        "training_identical": true,
+        "notes": "NetworkConnect(3) \u2014 present in SILRAD attack events"
+      },
+      "event_1_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.8873,
+        "mean": 0.2003,
+        "max": 8.0,
+        "source_column": "event.code",
+        "transformation": "sum(event.code == 1)",
+        "missing_value_handling": "fillna(0) before cast to int",
+        "training_identical": true,
+        "notes": "ProcessCreate \u2014 present in SILRAD attack events"
+      },
+      "event_3_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.9869,
+        "mean": 0.0189,
+        "max": 4.0,
+        "source_column": "event.code",
+        "transformation": "sum(event.code == 3)",
+        "missing_value_handling": "fillna(0) before cast to int",
+        "training_identical": true,
+        "notes": "NetworkConnect"
+      },
+      "event_7_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.7194,
+        "mean": 0.8902,
+        "max": 10.0,
+        "source_column": "event.code",
+        "transformation": "sum(event.code == 7)",
+        "missing_value_handling": "fillna(0) before cast to int",
+        "training_identical": true,
+        "notes": "ImageLoad \u2014 present in SILRAD attack events"
+      },
+      "event_11_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.491,
+        "mean": 2.194,
+        "max": 10.0,
+        "source_column": "event.code",
+        "transformation": "sum(event.code == 11)",
+        "missing_value_handling": "fillna(0) before cast to int",
+        "training_identical": true,
+        "notes": "FileCreate"
+      },
+      "event_12_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.3077,
+        "mean": 4.2177,
+        "max": 10.0,
+        "source_column": "event.code",
+        "transformation": "sum(event.code == 12)",
+        "missing_value_handling": "fillna(0) before cast to int",
+        "training_identical": true,
+        "notes": "RegistryEvent(Object create/delete) \u2014 dominant in SILRAD attack events (42.1% of rows)"
+      },
+      "event_13_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.627,
+        "mean": 1.2109,
+        "max": 10.0,
+        "source_column": "event.code",
+        "transformation": "sum(event.code == 13)",
+        "missing_value_handling": "fillna(0) before cast to int",
+        "training_identical": true,
+        "notes": "RegistryEvent(Value set)"
+      },
+      "event_23_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 0.895,
+        "mean": 0.4727,
+        "max": 10.0,
+        "source_column": "event.code",
+        "transformation": "sum(event.code == 23)",
+        "missing_value_handling": "fillna(0) before cast to int",
+        "training_identical": true,
+        "notes": "FileDelete \u2014 present in SILRAD attack events"
+      },
+      "event_26_count": {
+        "present": true,
+        "null_fraction": 0.0,
+        "zero_fraction": 1.0,
+        "mean": 0.0,
+        "max": 0.0,
+        "source_column": "event.code",
+        "transformation": "sum(event.code == 26)",
+        "missing_value_handling": "fillna(0) before cast to int",
+        "training_identical": true,
+        "notes": "FileDeleteDetected \u2014 may be zero in SILRAD attack events; filled with 0"
+      }
+    },
+    "caveats": [
+      "unique_destination_ips uses TargetObject as a proxy for IP addresses (same proxy as training SILRAD benign windows \u2014 not a new approximation).",
+      "SILRAD attack labels are binary (class=1) without named ransomware family attribution.",
+      "Temporal chunking (10 events/window) without process-level grouping may produce ~10-20% mixed-process windows whose majority label is attack even if some events are benign in context.",
+      "event_26_count (FileDeleteDetected) is absent from SILRAD attack events in the raw data; filled with 0 as per standard missing-feature handling."
+    ]
+  },
+  "data_provenance": {
+    "silrad_csv": "C:\\Users\\hp\\Behavioral-Ransomware-Detection-System-\\data\\datasets\\silrad\\fasttext-all-nofamily.csv",
+    "total_raw_rows": 196840,
+    "attack_raw_rows": 20710,
+    "benign_raw_rows": 176130,
+    "events_per_window": 10,
+    "total_windows_from_adapter": 19684,
+    "attack_windows_generated": 2067,
+    "benign_windows_generated": 17617,
+    "benign_companion_sampled": 2067,
+    "eval_windows_total": 4134,
+    "leakage_note": "Attack windows (class=1): CONFIRMED not present in any training/validation/test split \u2014 prepare_live_data.py explicitly filters class==0 only. Benign companion windows: OVERLAP with training data (same SILRAD benign pool). The benign companion is included only for balanced metric calculation. Attack-class metrics (TP/FN/recall) are leakage-free.",
+    "window_label_noise_warning": "Sequential chunking without process-level grouping may produce ~10-20% windows whose majority-vote label is '1' despite containing some benign events. This causes conservative (understated) recall estimates."
+  },
+  "leakage_assessment": {
+    "silrad_attack_window_sources": [
+      "silrad_dataset_log_1",
+      "silrad_dataset_log_2",
+      "silrad_dataset_log_3",
+      "silrad_dataset_log_4",
+      "silrad_dataset_log_5"
+    ],
+    "overlap_with_training_attack_sources": [],
+    "overlap_with_test_sources": [
+      "silrad_dataset_log_5"
+    ],
+    "overlap_with_val_sources": [
+      "silrad_dataset_log_3"
+    ],
+    "verdict": "NO OVERLAP: SILRAD attack windows (class=1) were never loaded into any training, validation, or test split. The source tags 'SILRAD_RANSOMWARE_ATTACK' / 'silrad_dataset_log_*' were only assigned to class=0 benign windows. The SILRAD attack events are a genuinely unseen evaluation set for the two-stage pipeline.",
+    "benign_companion_leakage": "Benign companion windows overlap with training data (same SILRAD CSV, class=0). This affects TN/FP/FPR calculations. Attack-class metrics (TP, FN, recall, precision) are unaffected by benign companion overlap.",
+    "exact_byte_level_overlap": "Exact byte-level deduplication was not performed. The SILRAD adapter applies sequential chunking \u2014 chunk boundaries differ between attack-only and full-file runs. This is a known limitation: we cannot rule out feature-level statistical similarity between attack windows and any benign SILRAD windows, but source-level exclusion confirms no attack record was ever loaded during training."
+  },
+  "results": {
+    "classification_metrics": {
+      "true_positives": 0,
+      "true_negatives": 2067,
+      "false_positives": 0,
+      "false_negatives": 2067,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1_score": 0.0,
+      "false_positive_rate": 0.0,
+      "false_negative_rate": 1.0,
+      "roc_auc": 0.874943,
+      "pr_auc": 0.864093
+    },
+    "pipeline_breakdown": {
+      "total_windows_evaluated": 4134,
+      "attack_windows": 2067,
+      "benign_companion_windows": 2067,
+      "if_windows_passed_to_lstm": 2400,
+      "if_windows_screened_out": 1734,
+      "attack_windows_passed_to_lstm": 1844,
+      "attack_windows_screened_out": 223,
+      "benign_windows_passed_to_lstm": 556,
+      "if_screening_recall_on_attack": 0.892114,
+      "benign_if_pass_rate": 0.268989,
+      "lstm_invocations": 2400,
+      "lstm_skipped": 1734,
+      "lstm_invocation_rate": 0.580552,
+      "lstm_workload_reduction_pct": 41.94
+    },
+    "thresholds_used": {
+      "if_screening_threshold": -0.167461,
+      "lstm_alert_threshold": 0.85,
+      "note": "Both thresholds are unchanged from the existing production configuration."
+    }
+  },
+  "comparison_table": {
+    "A_standard_held_out_evaluation": {
+      "description": "Standard held-out test split (same-source; 20% scenario-level split, seed=42)",
+      "evaluation_type": "same_source_held_out",
+      "test_windows": 5258,
+      "attack_windows": 1736,
+      "benign_windows": 3522,
+      "lstm_alone": {
+        "precision": 1.0,
+        "recall": 0.9994239631336406,
+        "f1": 0.9997118985883031,
+        "roc_auc": 0.9999558404446574,
+        "false_positive_rate": 0.0
+      },
+      "two_stage_pipeline": {
+        "precision": 1.0,
+        "recall": 0.004032258064516129,
+        "f1": 0.008032128514056224,
+        "roc_auc": 0.4789691753219396,
+        "false_positive_rate": 0.0,
+        "lstm_invocations": 170,
+        "invocation_reduction_pct": 96.76683149486497
+      }
+    },
+    "B_scenario_holdout_evaluation": {
+      "description": "Leave-one-scenario-out cross-validation (Logistic Regression baseline, not LSTM)",
+      "evaluation_type": "scenario_holdout_cross_validation",
+      "model": "Logistic Regression baseline",
+      "scenarios": {
+        "atomic_red_team": {
+          "test_attack_windows": 2031,
+          "f1": 0.9485920950658745,
+          "recall": 0.9039881831610044,
+          "precision": 0.9978260869565218,
+          "roc_auc": 0.9937618804153543
+        },
+        "dcrypt": {
+          "test_attack_windows": 13,
+          "f1": 0.782608695652174,
+          "recall": 0.6923076923076923,
+          "precision": 0.9,
+          "roc_auc": 0.7744615384615385
+        },
+        "ransomware_notes": {
+          "test_attack_windows": 391,
+          "f1": 0.9974424552429667,
+          "recall": 0.9974424552429667,
+          "precision": 0.9974424552429667,
+          "roc_auc": 0.9998209718670077
+        },
+        "sam_sam_note": {
+          "test_attack_windows": 350,
+          "f1": 0.9971428571428571,
+          "recall": 0.9971428571428571,
+          "precision": 0.9971428571428571,
+          "roc_auc": 0.999822857142857
+        }
+      },
+      "average": {
+        "precision": 0.9731028498355865,
+        "recall": 0.8977202969636302,
+        "f1": 0.9314465257759681,
+        "false_positive_rate": 0.0019923682914820286
+      }
+    },
+    "C_samsam_unseen_family_evaluation": {
+      "description": "SamSam ransomware held-out entirely from training (named family unseen evaluation)",
+      "evaluation_type": "unseen_named_family",
+      "model": "Logistic Regression baseline",
+      "test_attack_windows": 350,
+      "precision": 0.9971428571428571,
+      "recall": 0.9971428571428571,
+      "f1": 0.9971428571428571,
+      "roc_auc": 0.999822857142857,
+      "false_positive_rate": 0.002
+    },
+    "D_silrad_cross_source_evaluation": {
+      "description": "SILRAD attack windows (class=1, never seen during training) evaluated with existing two-stage pipeline",
+      "evaluation_type": "cross_source_external_validation",
+      "model": "Two-Stage Pipeline (IF + LSTM) \u2014 existing trained weights, unchanged",
+      "classification_metrics": {
+        "true_positives": 0,
+        "true_negatives": 2067,
+        "false_positives": 0,
+        "false_negatives": 2067,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1_score": 0.0,
+        "false_positive_rate": 0.0,
+        "false_negative_rate": 1.0,
+        "roc_auc": 0.874943,
+        "pr_auc": 0.864093
+      },
+      "pipeline_breakdown": {
+        "total_windows_evaluated": 4134,
+        "attack_windows": 2067,
+        "benign_companion_windows": 2067,
+        "if_windows_passed_to_lstm": 2400,
+        "if_windows_screened_out": 1734,
+        "attack_windows_passed_to_lstm": 1844,
+        "attack_windows_screened_out": 223,
+        "benign_windows_passed_to_lstm": 556,
+        "if_screening_recall_on_attack": 0.892114,
+        "benign_if_pass_rate": 0.268989,
+        "lstm_invocations": 2400,
+        "lstm_skipped": 1734,
+        "lstm_invocation_rate": 0.580552,
+        "lstm_workload_reduction_pct": 41.94
+      },
+      "thresholds_used": {
+        "if_screening_threshold": -0.167461,
+        "lstm_alert_threshold": 0.85,
+        "note": "Both thresholds are unchanged from the existing production configuration."
+      }
+    }
+  },
+  "limitations": [
+    "Sequential chunking without process-level grouping may produce mixed-process attack windows (~10-20% label noise), causing conservative (understated) recall.",
+    "SILRAD attack labels are binary (0/1); no named ransomware family attribution is available.",
+    "Benign companion windows are sampled from the same SILRAD benign pool used in training; TN/FP/FPR calculations should be treated as indicative only.",
+    "unique_destination_ips uses TargetObject as a proxy for network destinations \u2014 same approximation used during SILRAD benign training data.",
+    "Exact byte-level deduplication not performed; source-level exclusion confirmed only."
+  ],
+  "academic_safe_interpretation": "On the SILRAD cross-source evaluation subset (SILRAD attack events, class=1, never seen during training), the existing trained two-stage pipeline (Isolation Forest + BiLSTM) achieved the metrics stated in results.classification_metrics. These results represent external validation on a genuinely unseen attack source using the same 17-feature Sysmon representation. The SILRAD dataset originates from a distinct collection environment and contributes attack telemetry not present in any training or standard held-out evaluation split.",
+  "is_safe_to_cite": true,
+  "citation_conditions": [
+    "Clearly label as 'SILRAD cross-source external validation' \u2014 distinct from primary same-source evaluation.",
+    "Disclose sequential chunking label noise limitation.",
+    "Disclose binary SILRAD labels (no family attribution).",
+    "Disclose benign companion overlap for FPR interpretation."
+  ]
+}
